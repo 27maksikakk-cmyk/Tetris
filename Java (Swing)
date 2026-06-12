@@ -1,0 +1,207 @@
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.util.Random;
+
+public class Tetris extends JPanel implements ActionListener, KeyListener {
+    private static final int GRID_W = 10;
+    private static final int GRID_H = 20;
+    private static final int BLOCK_SIZE = 30;
+    private Timer timer;
+    private int[][] grid = new int[GRID_H][GRID_W];
+    private int score = 0, lines = 0, level = 1, highScore = 0;
+    private boolean gameOver = false, paused = false;
+    private Random rand = new Random();
+    private Piece current, next;
+    
+    private Color[] colors = {
+        Color.BLACK, Color.CYAN, Color.MAGENTA, Color.YELLOW,
+        Color.ORANGE, Color.BLUE, Color.GREEN, Color.RED
+    };
+    
+    private int[][][] shapes = {
+        {{1,1,1,1}},
+        {{1,1},{1,1}},
+        {{0,1,0},{1,1,1}},
+        {{1,0,0},{1,1,1}},
+        {{0,0,1},{1,1,1}},
+        {{0,1,1},{1,1,0}},
+        {{1,1,0},{0,1,1}}
+    };
+    
+    public Tetris() {
+        setPreferredSize(new Dimension(GRID_W*BLOCK_SIZE+200, GRID_H*BLOCK_SIZE));
+        setFocusable(true);
+        addKeyListener(this);
+        loadHighScore();
+        newGame();
+        timer = new Timer(500, this);
+        timer.start();
+    }
+    
+    private void newGame() {
+        grid = new int[GRID_H][GRID_W];
+        score = 0; lines = 0; level = 1; gameOver = false; paused = false;
+        current = randomPiece();
+        next = randomPiece();
+        timer.setDelay(500);
+        repaint();
+    }
+    
+    private Piece randomPiece() {
+        int idx = rand.nextInt(shapes.length);
+        int[][] shape = shapes[idx];
+        int colorIdx = idx+1;
+        return new Piece(shape, colorIdx, GRID_W/2 - shape[0].length/2, 0);
+    }
+    
+    private boolean validMove(int[][] shape, int x, int y) {
+        for (int i=0; i<shape.length; i++)
+            for (int j=0; j<shape[i].length; j++)
+                if (shape[i][j]==1) {
+                    int nx = x+j, ny = y+i;
+                    if (nx<0 || nx>=GRID_W || ny>=GRID_H || ny<0) return false;
+                    if (ny>=0 && grid[ny][nx]!=0) return false;
+                }
+        return true;
+    }
+    
+    private void merge() {
+        for (int i=0; i<current.shape.length; i++)
+            for (int j=0; j<current.shape[i].length; j++)
+                if (current.shape[i][j]==1)
+                    grid[current.y+i][current.x+j] = current.color;
+        clearLines();
+        current = next;
+        next = randomPiece();
+        if (!validMove(current.shape, current.x, current.y)) gameOver = true;
+        repaint();
+    }
+    
+    private void clearLines() {
+        int linesCleared = 0;
+        for (int y=GRID_H-1; y>=0; y--) {
+            boolean full = true;
+            for (int x=0; x<GRID_W; x++) if (grid[y][x]==0) { full=false; break; }
+            if (full) {
+                for (int yy=y; yy>0; yy--) grid[yy] = grid[yy-1].clone();
+                grid[0] = new int[GRID_W];
+                linesCleared++;
+                y++;
+            }
+        }
+        if (linesCleared>0) {
+            lines += linesCleared;
+            int[] points = {0,40,100,300,1200};
+            score += points[linesCleared] * level;
+            level = 1 + lines/10;
+            int delay = Math.max(100, 500 - (level-1)*30);
+            timer.setDelay(delay);
+            if (score > highScore) { highScore = score; saveHighScore(); }
+            repaint();
+        }
+    }
+    
+    private void move(int dx, int dy) {
+        if (gameOver || paused) return;
+        if (validMove(current.shape, current.x+dx, current.y+dy)) {
+            current.x += dx; current.y += dy;
+            repaint();
+        } else if (dy==1) merge();
+    }
+    
+    private void rotate() {
+        if (gameOver || paused) return;
+        int rows = current.shape.length, cols = current.shape[0].length;
+        int[][] rotated = new int[cols][rows];
+        for (int i=0; i<rows; i++)
+            for (int j=0; j<cols; j++)
+                rotated[j][rows-1-i] = current.shape[i][j];
+        if (validMove(rotated, current.x, current.y))
+            current.shape = rotated;
+        repaint();
+    }
+    
+    private void hardDrop() {
+        while (validMove(current.shape, current.x, current.y+1)) current.y++;
+        merge();
+    }
+    
+    @Override
+    public void actionPerformed(ActionEvent e) {
+        if (!gameOver && !paused) move(0,1);
+    }
+    
+    @Override
+    public void keyPressed(KeyEvent e) {
+        int key = e.getKeyCode();
+        if (key==KeyEvent.VK_LEFT) move(-1,0);
+        else if (key==KeyEvent.VK_RIGHT) move(1,0);
+        else if (key==KeyEvent.VK_DOWN) move(0,1);
+        else if (key==KeyEvent.VK_UP) rotate();
+        else if (key==KeyEvent.VK_SPACE) hardDrop();
+        else if (key==KeyEvent.VK_P) { paused = !paused; repaint(); }
+        else if (key==KeyEvent.VK_R && gameOver) newGame();
+    }
+    
+    @Override
+    public void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        // поле
+        for (int y=0; y<GRID_H; y++)
+            for (int x=0; x<GRID_W; x++) {
+                int val = grid[y][x];
+                if (val>0) {
+                    g.setColor(colors[val]);
+                    g.fillRect(x*BLOCK_SIZE, y*BLOCK_SIZE, BLOCK_SIZE-1, BLOCK_SIZE-1);
+                } else {
+                    g.setColor(Color.DARK_GRAY);
+                    g.drawRect(x*BLOCK_SIZE, y*BLOCK_SIZE, BLOCK_SIZE-1, BLOCK_SIZE-1);
+                }
+            }
+        // текущая фигура
+        for (int i=0; i<current.shape.length; i++)
+            for (int j=0; j<current.shape[i].length; j++)
+                if (current.shape[i][j]==1) {
+                    g.setColor(colors[current.color]);
+                    g.fillRect((current.x+j)*BLOCK_SIZE, (current.y+i)*BLOCK_SIZE, BLOCK_SIZE-1, BLOCK_SIZE-1);
+                }
+        // панель
+        int panelX = GRID_W*BLOCK_SIZE + 10;
+        g.setColor(Color.WHITE);
+        g.drawString("SCORE: "+score, panelX, 50);
+        g.drawString("LINES: "+lines, panelX, 90);
+        g.drawString("LEVEL: "+level, panelX, 130);
+        g.drawString("HIGH: "+highScore, panelX, 170);
+        g.drawString("NEXT:", panelX, 220);
+        for (int i=0; i<next.shape.length; i++)
+            for (int j=0; j<next.shape[i].length; j++)
+                if (next.shape[i][j]==1) {
+                    g.setColor(colors[next.color]);
+                    g.fillRect(panelX+j*25, 250+i*25, 24, 24);
+                }
+        if (gameOver) { g.setColor(Color.RED); g.drawString("GAME OVER", panelX, 400); }
+        if (paused) { g.setColor(Color.YELLOW); g.drawString("PAUSED", panelX, 400); }
+    }
+    
+    @Override public void keyReleased(KeyEvent e) {}
+    @Override public void keyTyped(KeyEvent e) {}
+    
+    private void loadHighScore() { /* из файла */ }
+    private void saveHighScore() { }
+    
+    public static void main(String[] args) {
+        JFrame frame = new JFrame("Tetris - Java");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.add(new Tetris());
+        frame.pack();
+        frame.setVisible(true);
+    }
+    
+    class Piece {
+        int[][] shape;
+        int color;
+        int x, y;
+        Piece(int[][] s, int c, int x, int y) { shape=s; color=c; this.x=x; this.y=y; }
+    }
+}
