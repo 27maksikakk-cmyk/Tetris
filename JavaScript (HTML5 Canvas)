@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Tetris - JS</title>
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; display: flex; justify-content: center; }
+        canvas { border: 1px solid #0f0; }
+        .info { margin-left: 20px; }
+    </style>
+</head>
+<body>
+<canvas id="tetrisCanvas" width="300" height="600"></canvas>
+<div class="info">
+    <div>SCORE: <span id="score">0</span></div>
+    <div>LINES: <span id="lines">0</span></div>
+    <div>LEVEL: <span id="level">1</span></div>
+    <div>HIGH: <span id="high">0</span></div>
+    <div>NEXT:</div>
+    <canvas id="nextCanvas" width="120" height="120"></canvas>
+    <div>Controls: ← → ↓ ↑, space, P, R</div>
+</div>
+<script src="tetris.js"></script>
+</body>
+</html>
+
+const canvas = document.getElementById('tetrisCanvas');
+const ctx = canvas.getContext('2d');
+const nextCanvas = document.getElementById('nextCanvas');
+const nextCtx = nextCanvas.getContext('2d');
+const BLOCK = 30;
+const GRID_W = 10;
+const GRID_H = 20;
+
+const colors = [
+    '#000000', '#00FFFF', '#FF00FF', '#FFFF00', '#FFA500', '#0000FF', '#00FF00', '#FF0000'
+];
+
+const shapes = [
+    [[1,1,1,1]],
+    [[1,1],[1,1]],
+    [[0,1,0],[1,1,1]],
+    [[1,0,0],[1,1,1]],
+    [[0,0,1],[1,1,1]],
+    [[0,1,1],[1,1,0]],
+    [[1,1,0],[0,1,1]]
+];
+
+let grid = Array(GRID_H).fill().map(() => Array(GRID_W).fill(0));
+let score = 0, lines = 0, level = 1, highScore = 0;
+let gameOver = false, paused = false;
+let fallInterval = null;
+let currentPiece, nextPiece;
+
+function randomPiece() {
+    const idx = Math.floor(Math.random() * shapes.length);
+    const shape = shapes[idx].map(row => [...row]);
+    return { shape, color: idx+1, x: Math.floor(GRID_W/2 - shape[0].length/2), y: 0 };
+}
+
+function validMove(shape, x, y) {
+    for (let i=0; i<shape.length; i++)
+        for (let j=0; j<shape[i].length; j++)
+            if (shape[i][j]) {
+                const nx = x + j, ny = y + i;
+                if (nx<0 || nx>=GRID_W || ny>=GRID_H || ny<0) return false;
+                if (ny>=0 && grid[ny][nx] !== 0) return false;
+            }
+    return true;
+}
+
+function merge() {
+    for (let i=0; i<currentPiece.shape.length; i++)
+        for (let j=0; j<currentPiece.shape[i].length; j++)
+            if (currentPiece.shape[i][j])
+                grid[currentPiece.y+i][currentPiece.x+j] = currentPiece.color;
+    clearLines();
+    currentPiece = nextPiece;
+    nextPiece = randomPiece();
+    if (!validMove(currentPiece.shape, currentPiece.x, currentPiece.y)) gameOver = true;
+    draw();
+}
+
+function clearLines() {
+    let linesCleared = 0;
+    for (let y=GRID_H-1; y>=0; y--) {
+        if (grid[y].every(cell => cell !== 0)) {
+            grid.splice(y,1);
+            grid.unshift(Array(GRID_W).fill(0));
+            linesCleared++;
+            y++;
+        }
+    }
+    if (linesCleared) {
+        lines += linesCleared;
+        const points = [0,40,100,300,1200];
+        score += points[linesCleared] * level;
+        level = 1 + Math.floor(lines/10);
+        const speed = Math.max(100, 500 - (level-1)*30);
+        if (fallInterval) clearInterval(fallInterval);
+        fallInterval = setInterval(() => { if (!gameOver && !paused) move(0,1); }, speed);
+        if (score > highScore) { highScore = score; localStorage.setItem('tetris_high', highScore); }
+        document.getElementById('score').innerText = score;
+        document.getElementById('lines').innerText = lines;
+        document.getElementById('level').innerText = level;
+        document.getElementById('high').innerText = highScore;
+    }
+}
+
+function move(dx, dy) {
+    if (gameOver || paused) return;
+    if (validMove(currentPiece.shape, currentPiece.x+dx, currentPiece.y+dy)) {
+        currentPiece.x += dx;
+        currentPiece.y += dy;
+        draw();
+    } else if (dy === 1) merge();
+}
+
+function rotate() {
+    if (gameOver || paused) return;
+    const rotated = currentPiece.shape[0].map((_, idx) => currentPiece.shape.map(row => row[idx]).reverse());
+    if (validMove(rotated, currentPiece.x, currentPiece.y))
+        currentPiece.shape = rotated;
+    draw();
+}
+
+function hardDrop() {
+    while (validMove(currentPiece.shape, currentPiece.x, currentPiece.y+1)) currentPiece.y++;
+    merge();
+}
+
+function draw() {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    // grid
+    for (let y=0; y<GRID_H; y++)
+        for (let x=0; x<GRID_W; x++)
+            if (grid[y][x]) {
+                ctx.fillStyle = colors[grid[y][x]];
+                ctx.fillRect(x*BLOCK, y*BLOCK, BLOCK-1, BLOCK-1);
+            } else {
+                ctx.strokeStyle = '#333';
+                ctx.strokeRect(x*BLOCK, y*BLOCK, BLOCK-1, BLOCK-1);
+            }
+    // current piece
+    for (let i=0; i<currentPiece.shape.length; i++)
+        for (let j=0; j<currentPiece.shape[i].length; j++)
+            if (currentPiece.shape[i][j]) {
+                ctx.fillStyle = colors[currentPiece.color];
+                ctx.fillRect((currentPiece.x+j)*BLOCK, (currentPiece.y+i)*BLOCK, BLOCK-1, BLOCK-1);
+            }
+    // next piece
+    nextCtx.clearRect(0,0,120,120);
+    for (let i=0; i<nextPiece.shape.length; i++)
+        for (let j=0; j<nextPiece.shape[i].length; j++)
+            if (nextPiece.shape[i][j]) {
+                nextCtx.fillStyle = colors[nextPiece.color];
+                nextCtx.fillRect(j*25, i*25, 24, 24);
+            }
+    if (gameOver) ctx.fillText("GAME OVER", 100, 300);
+    if (paused) ctx.fillText("PAUSED", 100, 300);
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') move(-1,0);
+    else if (e.key === 'ArrowRight') move(1,0);
+    else if (e.key === 'ArrowDown') move(0,1);
+    else if (e.key === 'ArrowUp') rotate();
+    else if (e.key === ' ') hardDrop();
+    else if (e.key === 'p' || e.key === 'P') { paused = !paused; draw(); }
+    else if (e.key === 'r' && gameOver) resetGame();
+});
+
+function resetGame() {
+    grid = Array(GRID_H).fill().map(() => Array(GRID_W).fill(0));
+    score = 0; lines = 0; level = 1; gameOver = false; paused = false;
+    currentPiece = randomPiece();
+    nextPiece = randomPiece();
+    document.getElementById('score').innerText = '0';
+    document.getElementById('lines').innerText = '0';
+    document.getElementById('level').innerText = '1';
+    if (fallInterval) clearInterval(fallInterval);
+    fallInterval = setInterval(() => { if (!gameOver && !paused) move(0,1); }, 500);
+    draw();
+}
+
+highScore = parseInt(localStorage.getItem('tetris_high')) || 0;
+document.getElementById('high').innerText = highScore;
+resetGame();
