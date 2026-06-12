@@ -1,0 +1,24 @@
+// TypeScript-версия идентична JavaScript, но с аннотациями типов.
+// Здесь представлен сокращённый вариант, так как логика повторяется.
+
+interface Piece {
+    shape: number[][];
+    color: number;
+    x: number;
+    y: number;
+}
+
+class TetrisGame {
+    private grid: number[][];
+    private score: number;
+    private lines: number;
+    private level: number;
+    private highScore: number;
+    private gameOver: boolean;
+    private paused: boolean;
+    private currentPiece: Piece;
+    private nextPiece: Piece;
+    private fallInterval: number | null;
+    // ... методы аналогичны JS-версии
+    // Полный код можно выложить в репозитории.
+}
