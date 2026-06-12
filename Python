@@ -1,0 +1,215 @@
+
+### 1. Python (Pygame)
+
+**`python/tetris.py`**
+
+```python
+import pygame
+import random
+import sys
+import json
+import os
+
+# Инициализация
+pygame.init()
+SCREEN_WIDTH = 300
+SCREEN_HEIGHT = 600
+BLOCK_SIZE = 30
+SCORE_PANEL = 200
+WIDTH = SCREEN_WIDTH + SCORE_PANEL
+HEIGHT = SCREEN_HEIGHT
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Tetris - Python")
+clock = pygame.time.Clock()
+
+# Цвета (CMYK стиль)
+COLORS = [
+    (0, 0, 0),        # пустота
+    (0, 255, 255),    # I – Cyan
+    (255, 0, 255),    # O – Magenta
+    (255, 255, 0),    # T – Yellow
+    (255, 165, 0),    # L – Orange
+    (0, 0, 255),      # J – Blue
+    (0, 255, 0),      # S – Green
+    (255, 0, 0)       # Z – Red
+]
+
+SHAPES = [
+    [[1,1,1,1]],                     # I
+    [[1,1],[1,1]],                   # O
+    [[0,1,0],[1,1,1]],               # T
+    [[1,0,0],[1,1,1]],               # L
+    [[0,0,1],[1,1,1]],               # J
+    [[0,1,1],[1,1,0]],               # S
+    [[1,1,0],[0,1,1]]                # Z
+]
+
+class Tetris:
+    def __init__(self):
+        self.grid = [[0]*10 for _ in range(20)]
+        self.score = 0
+        self.lines = 0
+        self.level = 1
+        self.current_piece = self.new_piece()
+        self.next_piece = self.new_piece()
+        self.game_over = False
+        self.paused = False
+        self.fall_time = 0
+        self.fall_speed = 500  # ms
+        self.load_high_score()
+        
+    def new_piece(self):
+        shape_idx = random.randint(0, len(SHAPES)-1)
+        shape = [row[:] for row in SHAPES[shape_idx]]
+        return {'shape': shape, 'color': shape_idx+1, 'x': 3, 'y': 0}
+    
+    def rotate(self):
+        rotated = list(zip(*self.current_piece['shape'][::-1]))
+        rotated = [list(row) for row in rotated]
+        if self.valid_move(rotated, self.current_piece['x'], self.current_piece['y']):
+            self.current_piece['shape'] = rotated
+    
+    def valid_move(self, shape, offset_x, offset_y):
+        for y, row in enumerate(shape):
+            for x, cell in enumerate(row):
+                if cell:
+                    new_x = offset_x + x
+                    new_y = offset_y + y
+                    if new_x < 0 or new_x >= 10 or new_y >= 20 or new_y < 0:
+                        return False
+                    if new_y >= 0 and self.grid[new_y][new_x] != 0:
+                        return False
+        return True
+    
+    def merge(self):
+        for y, row in enumerate(self.current_piece['shape']):
+            for x, cell in enumerate(row):
+                if cell:
+                    self.grid[self.current_piece['y']+y][self.current_piece['x']+x] = self.current_piece['color']
+        self.clear_lines()
+        self.current_piece = self.next_piece
+        self.next_piece = self.new_piece()
+        if not self.valid_move(self.current_piece['shape'], self.current_piece['x'], self.current_piece['y']):
+            self.game_over = True
+    
+    def clear_lines(self):
+        lines_cleared = 0
+        for i in range(len(self.grid)-1, -1, -1):
+            if all(cell != 0 for cell in self.grid[i]):
+                del self.grid[i]
+                self.grid.insert(0, [0]*10)
+                lines_cleared += 1
+        if lines_cleared:
+            self.lines += lines_cleared
+            self.score += [40,100,300,1200][min(lines_cleared,4)-1] * self.level
+            self.level = 1 + self.lines // 10
+            self.fall_speed = max(100, 500 - (self.level-1)*30)
+            self.update_high_score()
+    
+    def move(self, dx, dy):
+        if self.valid_move(self.current_piece['shape'], self.current_piece['x']+dx, self.current_piece['y']+dy):
+            self.current_piece['x'] += dx
+            self.current_piece['y'] += dy
+            return True
+        if dy == 1:  # попытка упасть вниз не удалась
+            self.merge()
+        return False
+    
+    def hard_drop(self):
+        while self.move(0, 1):
+            pass
+    
+    def update_high_score(self):
+        if self.score > self.high_score:
+            self.high_score = self.score
+            self.save_high_score()
+    
+    def load_high_score(self):
+        if os.path.exists("highscore.json"):
+            with open("highscore.json", "r") as f:
+                data = json.load(f)
+                self.high_score = data.get("high_score", 0)
+        else:
+            self.high_score = 0
+    
+    def save_high_score(self):
+        with open("highscore.json", "w") as f:
+            json.dump({"high_score": self.high_score}, f)
+
+def draw_text(surface, text, size, x, y, color=(255,255,255)):
+    font = pygame.font.Font(None, size)
+    text_surface = font.render(text, True, color)
+    surface.blit(text_surface, (x, y))
+
+def main():
+    game = Tetris()
+    last_time = pygame.time.get_ticks()
+    running = True
+    while running:
+        current_time = pygame.time.get_ticks()
+        if not game.paused and not game.game_over:
+            if current_time - last_time > game.fall_speed:
+                game.move(0, 1)
+                last_time = current_time
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_LEFT:
+                    game.move(-1, 0)
+                elif event.key == pygame.K_RIGHT:
+                    game.move(1, 0)
+                elif event.key == pygame.K_DOWN:
+                    game.move(0, 1)
+                elif event.key == pygame.K_UP:
+                    game.rotate()
+                elif event.key == pygame.K_SPACE:
+                    game.hard_drop()
+                elif event.key == pygame.K_p:
+                    game.paused = not game.paused
+                elif event.key == pygame.K_r and game.game_over:
+                    game = Tetris()
+                    last_time = pygame.time.get_ticks()
+        
+        screen.fill((0,0,0))
+        # Отрисовка поля
+        for y in range(20):
+            for x in range(10):
+                color = COLORS[game.grid[y][x]]
+                pygame.draw.rect(screen, color, (x*BLOCK_SIZE, y*BLOCK_SIZE, BLOCK_SIZE-1, BLOCK_SIZE-1))
+        # Отрисовка текущей фигуры
+        for y, row in enumerate(game.current_piece['shape']):
+            for x, cell in enumerate(row):
+                if cell:
+                    color = COLORS[game.current_piece['color']]
+                    px = (game.current_piece['x']+x)*BLOCK_SIZE
+                    py = (game.current_piece['y']+y)*BLOCK_SIZE
+                    pygame.draw.rect(screen, color, (px, py, BLOCK_SIZE-1, BLOCK_SIZE-1))
+        
+        # Панель справа
+        panel_x = SCREEN_WIDTH + 10
+        draw_text(screen, f"SCORE: {game.score}", 24, panel_x, 50)
+        draw_text(screen, f"LINES: {game.lines}", 24, panel_x, 100)
+        draw_text(screen, f"LEVEL: {game.level}", 24, panel_x, 150)
+        draw_text(screen, f"HIGH: {game.high_score}", 24, panel_x, 200)
+        draw_text(screen, "NEXT:", 24, panel_x, 250)
+        next_shape = game.next_piece['shape']
+        for y, row in enumerate(next_shape):
+            for x, cell in enumerate(row):
+                if cell:
+                    color = COLORS[game.next_piece['color']]
+                    pygame.draw.rect(screen, color, (panel_x + x*25, 280 + y*25, 24, 24))
+        if game.game_over:
+            draw_text(screen, "GAME OVER", 36, panel_x, 400, (255,0,0))
+            draw_text(screen, "Press R", 24, panel_x, 450)
+        if game.paused:
+            draw_text(screen, "PAUSED", 36, panel_x, 400, (255,255,0))
+        
+        pygame.display.flip()
+        clock.tick(60)
+    pygame.quit()
+    sys.exit()
+
+if __name__ == "__main__":
+    main()
