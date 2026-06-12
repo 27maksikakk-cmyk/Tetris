@@ -1,0 +1,278 @@
+use ggez;
+use ggez::event;
+use ggez::graphics::{self, Color, DrawParam, Rect};
+use ggez::{Context, GameResult};
+use rand::Rng;
+use std::collections::VecDeque;
+
+const GRID_W: usize = 10;
+const GRID_H: usize = 20;
+const BLOCK_SIZE: f32 = 30.0;
+const SCREEN_W: f32 = BLOCK_SIZE * GRID_W as f32 + 200.0;
+const SCREEN_H: f32 = BLOCK_SIZE * GRID_H as f32;
+
+const COLORS: [Color; 8] = [
+    Color::BLACK,
+    Color::from_rgb(0, 255, 255),   // Cyan
+    Color::from_rgb(255, 0, 255),   // Magenta
+    Color::from_rgb(255, 255, 0),   // Yellow
+    Color::from_rgb(255, 165, 0),   // Orange
+    Color::from_rgb(0, 0, 255),     // Blue
+    Color::from_rgb(0, 255, 0),     // Green
+    Color::from_rgb(255, 0, 0),     // Red
+];
+
+const SHAPES: &[[&[usize]; 2]] = &[
+    &[&[1,1,1,1]],                     // I
+    &[&[1,1],&[1,1]],                 // O
+    &[&[0,1,0],&[1,1,1]],             // T
+    &[&[1,0,0],&[1,1,1]],             // L
+    &[&[0,0,1],&[1,1,1]],             // J
+    &[&[0,1,1],&[1,1,0]],             // S
+    &[&[1,1,0],&[0,1,1]],             // Z
+];
+
+struct Piece {
+    shape: Vec<Vec<usize>>,
+    color: usize,
+    x: i32,
+    y: i32,
+}
+
+struct Game {
+    grid: [[usize; GRID_W]; GRID_H],
+    score: i32,
+    lines: i32,
+    level: i32,
+    current: Piece,
+    next: Piece,
+    fall_timer: f32,
+    fall_speed: f32,
+    game_over: bool,
+    paused: bool,
+    high_score: i32,
+}
+
+impl Game {
+    fn new() -> Self {
+        let mut game = Game {
+            grid: [[0; GRID_W]; GRID_H],
+            score: 0,
+            lines: 0,
+            level: 1,
+            current: Piece::random(),
+            next: Piece::random(),
+            fall_timer: 0.0,
+            fall_speed: 0.5,
+            game_over: false,
+            paused: false,
+            high_score: 0,
+        };
+        game.load_high_score();
+        game.spawn_new_piece();
+        game
+    }
+
+    fn random_piece() -> Piece {
+        let mut rng = rand::thread_rng();
+        let idx = rng.gen_range(0..SHAPES.len());
+        let shape = SHAPES[idx].iter().map(|row| row.to_vec()).collect();
+        Piece { shape, color: idx+1, x: (GRID_W/2) as i32 - 1, y: 0 }
+    }
+
+    fn spawn_new_piece(&mut self) {
+        self.current = self.next.clone();
+        self.next = Piece::random();
+        if !self.valid_move(&self.current.shape, self.current.x, self.current.y) {
+            self.game_over = true;
+        }
+    }
+
+    fn valid_move(&self, shape: &Vec<Vec<usize>>, x: i32, y: i32) -> bool {
+        for (i, row) in shape.iter().enumerate() {
+            for (j, &cell) in row.iter().enumerate() {
+                if cell == 1 {
+                    let nx = x + j as i32;
+                    let ny = y + i as i32;
+                    if nx < 0 || nx >= GRID_W as i32 || ny >= GRID_H as i32 || ny < 0 {
+                        return false;
+                    }
+                    if ny >= 0 && self.grid[ny as usize][nx as usize] != 0 {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn merge(&mut self) {
+        for (i, row) in self.current.shape.iter().enumerate() {
+            for (j, &cell) in row.iter().enumerate() {
+                if cell == 1 {
+                    let x = (self.current.x + j as i32) as usize;
+                    let y = (self.current.y + i as i32) as usize;
+                    self.grid[y][x] = self.current.color;
+                }
+            }
+        }
+        self.clear_lines();
+        self.spawn_new_piece();
+    }
+
+    fn clear_lines(&mut self) {
+        let mut lines_cleared = 0;
+        for y in (0..GRID_H).rev() {
+            if self.grid[y].iter().all(|&c| c != 0) {
+                for yy in (1..=y).rev() {
+                    self.grid[yy] = self.grid[yy-1];
+                }
+                self.grid[0] = [0; GRID_W];
+                lines_cleared += 1;
+                // проверяем ту же строку снова
+                // так как сдвинули, можно продолжить
+            }
+        }
+        if lines_cleared > 0 {
+            self.lines += lines_cleared as i32;
+            let points = [0,40,100,300,1200];
+            let idx = lines_cleared.min(4);
+            self.score += points[idx] * self.level;
+            self.level = 1 + self.lines / 10;
+            self.fall_speed = 0.5 - (self.level-1) as f32 * 0.03;
+            if self.fall_speed < 0.1 { self.fall_speed = 0.1; }
+            if self.score > self.high_score {
+                self.high_score = self.score;
+                self.save_high_score();
+            }
+        }
+    }
+
+    fn move_piece(&mut self, dx: i32, dy: i32) -> bool {
+        if self.valid_move(&self.current.shape, self.current.x+dx, self.current.y+dy) {
+            self.current.x += dx;
+            self.current.y += dy;
+            true
+        } else if dy == 1 {
+            self.merge();
+            false
+        } else {
+            false
+        }
+    }
+
+    fn rotate(&mut self) {
+        let mut rotated = vec![vec![0; self.current.shape.len()]; self.current.shape[0].len()];
+        for i in 0..self.current.shape.len() {
+            for j in 0..self.current.shape[0].len() {
+                rotated[j][self.current.shape.len()-1-i] = self.current.shape[i][j];
+            }
+        }
+        if self.valid_move(&rotated, self.current.x, self.current.y) {
+            self.current.shape = rotated;
+        }
+    }
+
+    fn hard_drop(&mut self) {
+        while self.move_piece(0, 1) {}
+    }
+
+    fn load_high_score(&mut self) {
+        // в реальном приложении – чтение из файла
+        self.high_score = 0;
+    }
+
+    fn save_high_score(&self) {}
+}
+
+impl event::EventHandler for Game {
+    fn update(&mut self, ctx: &mut Context) -> GameResult {
+        if self.game_over {
+            return Ok(());
+        }
+        if self.paused {
+            return Ok(());
+        }
+        let dt = ggez::timer::delta(ctx).as_secs_f32();
+        self.fall_timer += dt;
+        if self.fall_timer >= self.fall_speed {
+            self.move_piece(0, 1);
+            self.fall_timer = 0.0;
+        }
+        Ok(())
+    }
+
+    fn key_down_event(&mut self, _ctx: &mut Context, input: ggez::input::keyboard::KeyInput, _repeat: bool) -> GameResult {
+        if self.game_over {
+            if input.keycode == Some(ggez::input::keyboard::KeyCode::R) {
+                *self = Game::new();
+            }
+            return Ok(());
+        }
+        match input.keycode {
+            Some(ggez::input::keyboard::KeyCode::Left) => { self.move_piece(-1, 0); }
+            Some(ggez::input::keyboard::KeyCode::Right) => { self.move_piece(1, 0); }
+            Some(ggez::input::keyboard::KeyCode::Down) => { self.move_piece(0, 1); }
+            Some(ggez::input::keyboard::KeyCode::Up) => { self.rotate(); }
+            Some(ggez::input::keyboard::KeyCode::Space) => { self.hard_drop(); }
+            Some(ggez::input::keyboard::KeyCode::P) => { self.paused = !self.paused; }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn draw(&mut self, ctx: &mut Context) -> GameResult {
+        graphics::clear(ctx, Color::BLACK);
+        // поле
+        for y in 0..GRID_H {
+            for x in 0..GRID_W {
+                let color = COLORS[self.grid[y][x]];
+                let rect = Rect::new(x as f32 * BLOCK_SIZE, y as f32 * BLOCK_SIZE, BLOCK_SIZE-1.0, BLOCK_SIZE-1.0);
+                let mesh = graphics::Mesh::new_rectangle(ctx, graphics::DrawMode::fill(), rect, color)?;
+                graphics::draw(ctx, &mesh, DrawParam::default())?;
+            }
+        }
+        // текущая фигура
+        for (i, row) in self.current.shape.iter().enumerate() {
+            for (j, &cell) in row.iter().enumerate() {
+                if cell == 1 {
+                    let color = COLORS[self.current.color];
+                    let x = (self.current.x + j as i32) as f32 * BLOCK_SIZE;
+                    let y = (self.current.y + i as i32) as f32 * BLOCK_SIZE;
+                    let rect = Rect::new(x, y, BLOCK_SIZE-1.0, BLOCK_SIZE-1.0);
+                    let mesh = graphics::Mesh::new_rectangle(ctx, graphics::DrawMode::fill(), rect, color)?;
+                    graphics::draw(ctx, &mesh, DrawParam::default())?;
+                }
+            }
+        }
+        // панель справа
+        let panel_x = GRID_W as f32 * BLOCK_SIZE + 10.0;
+        let text = graphics::Text::new(format!("SCORE: {}", self.score));
+        graphics::draw(ctx, &text, DrawParam::default().dest([panel_x, 50.0]))?;
+        let text = graphics::Text::new(format!("LINES: {}", self.lines));
+        graphics::draw(ctx, &text, DrawParam::default().dest([panel_x, 100.0]))?;
+        let text = graphics::Text::new(format!("LEVEL: {}", self.level));
+        graphics::draw(ctx, &text, DrawParam::default().dest([panel_x, 150.0]))?;
+        let text = graphics::Text::new(format!("HIGH: {}", self.high_score));
+        graphics::draw(ctx, &text, DrawParam::default().dest([panel_x, 200.0]))?;
+        if self.game_over {
+            let text = graphics::Text::new("GAME OVER");
+            graphics::draw(ctx, &text, DrawParam::default().dest([panel_x, 350.0]).color(Color::RED))?;
+        }
+        if self.paused {
+            let text = graphics::Text::new("PAUSED");
+            graphics::draw(ctx, &text, DrawParam::default().dest([panel_x, 350.0]).color(Color::YELLOW))?;
+        }
+        graphics::present(ctx)?;
+        Ok(())
+    }
+}
+
+fn main() -> GameResult {
+    let (ctx, event_loop) = ggez::ContextBuilder::new("tetris", "author")
+        .window_setup(ggez::conf::WindowSetup::default().title("Tetris - Rust"))
+        .window_mode(ggez::conf::WindowMode::default().dimensions(SCREEN_W, SCREEN_H))
+        .build()?;
+    let game = Game::new();
+    event::run(ctx, event_loop, game)
+}
