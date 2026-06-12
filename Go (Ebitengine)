@@ -1,0 +1,316 @@
+package main
+
+import (
+    "encoding/json"
+    "image/color"
+    "log"
+    "math/rand"
+    "os"
+    "time"
+    "github.com/hajimehoshi/ebiten/v2"
+    "github.com/hajimehoshi/ebiten/v2/inpututil"
+)
+
+const (
+    screenWidth  = 500
+    screenHeight = 600
+    blockSize    = 30
+    gridW        = 10
+    gridH        = 20
+    panelX       = 320
+)
+
+var (
+    colors = []color.Color{
+        color.Black,
+        color.RGBA{0, 255, 255, 255}, // Cyan
+        color.RGBA{255, 0, 255, 255}, // Magenta
+        color.RGBA{255, 255, 0, 255}, // Yellow
+        color.RGBA{255, 165, 0, 255}, // Orange
+        color.RGBA{0, 0, 255, 255},   // Blue
+        color.RGBA{0, 255, 0, 255},   // Green
+        color.RGBA{255, 0, 0, 255},   // Red
+    }
+    shapes = [][][]int{
+        {{1,1,1,1}},                                 // I
+        {{1,1},{1,1}},                               // O
+        {{0,1,0},{1,1,1}},                           // T
+        {{1,0,0},{1,1,1}},                           // L
+        {{0,0,1},{1,1,1}},                           // J
+        {{0,1,1},{1,1,0}},                           // S
+        {{1,1,0},{0,1,1}},                           // Z
+    }
+)
+
+type Piece struct {
+    shape [][]int
+    color int
+    x, y  int
+}
+
+type Game struct {
+    grid         [gridH][gridW]int
+    score        int
+    lines        int
+    level        int
+    current      Piece
+    next         Piece
+    fallTimer    int
+    fallSpeed    int
+    gameOver     bool
+    paused       bool
+    highScore    int
+}
+
+func NewGame() *Game {
+    g := &Game{
+        level:     1,
+        fallSpeed: 30, // frames
+        highScore: 0,
+    }
+    g.loadHighScore()
+    g.newPiece()
+    g.nextPiece()
+    return g
+}
+
+func (g *Game) newPiece() Piece {
+    idx := rand.Intn(len(shapes))
+    shape := make([][]int, len(shapes[idx]))
+    for i, row := range shapes[idx] {
+        shape[i] = make([]int, len(row))
+        copy(shape[i], row)
+    }
+    return Piece{shape: shape, color: idx + 1, x: gridW/2 - len(shape[0])/2, y: 0}
+}
+
+func (g *Game) nextPiece() {
+    g.current = g.next
+    g.next = g.newPiece()
+    if !g.validMove(g.current.shape, g.current.x, g.current.y) {
+        g.gameOver = true
+    }
+}
+
+func (g *Game) validMove(shape [][]int, x, y int) bool {
+    for i, row := range shape {
+        for j, cell := range row {
+            if cell == 1 {
+                nx, ny := x+j, y+i
+                if nx < 0 || nx >= gridW || ny >= gridH || ny < 0 {
+                    return false
+                }
+                if ny >= 0 && g.grid[ny][nx] != 0 {
+                    return false
+                }
+            }
+        }
+    }
+    return true
+}
+
+func (g *Game) merge() {
+    for i, row := range g.current.shape {
+        for j, cell := range row {
+            if cell == 1 {
+                g.grid[g.current.y+i][g.current.x+j] = g.current.color
+            }
+        }
+    }
+    g.clearLines()
+    g.nextPiece()
+}
+
+func (g *Game) clearLines() {
+    linesCleared := 0
+    for y := gridH - 1; y >= 0; y-- {
+        full := true
+        for x := 0; x < gridW; x++ {
+            if g.grid[y][x] == 0 {
+                full = false
+                break
+            }
+        }
+        if full {
+            // сдвинуть вниз
+            for yy := y; yy > 0; yy-- {
+                g.grid[yy] = g.grid[yy-1]
+            }
+            g.grid[0] = [gridW]int{}
+            linesCleared++
+            y++
+        }
+    }
+    if linesCleared > 0 {
+        g.lines += linesCleared
+        points := []int{0, 40, 100, 300, 1200}
+        if linesCleared <= 4 {
+            g.score += points[linesCleared] * g.level
+        } else {
+            g.score += 1200 * g.level
+        }
+        g.level = 1 + g.lines/10
+        g.fallSpeed = 30 - (g.level-1)*2
+        if g.fallSpeed < 8 {
+            g.fallSpeed = 8
+        }
+        if g.score > g.highScore {
+            g.highScore = g.score
+            g.saveHighScore()
+        }
+    }
+}
+
+func (g *Game) move(dx, dy int) bool {
+    if g.validMove(g.current.shape, g.current.x+dx, g.current.y+dy) {
+        g.current.x += dx
+        g.current.y += dy
+        return true
+    }
+    if dy == 1 {
+        g.merge()
+    }
+    return false
+}
+
+func (g *Game) rotate() {
+    // поворот на 90 градусов
+    rotated := make([][]int, len(g.current.shape[0]))
+    for i := range rotated {
+        rotated[i] = make([]int, len(g.current.shape))
+    }
+    for i, row := range g.current.shape {
+        for j, val := range row {
+            rotated[j][len(g.current.shape)-1-i] = val
+        }
+    }
+    if g.validMove(rotated, g.current.x, g.current.y) {
+        g.current.shape = rotated
+    }
+}
+
+func (g *Game) hardDrop() {
+    for g.move(0, 1) {
+    }
+}
+
+func (g *Game) loadHighScore() {
+    data, err := os.ReadFile("highscore.json")
+    if err == nil {
+        var hs struct{ High int }
+        json.Unmarshal(data, &hs)
+        g.highScore = hs.High
+    }
+}
+
+func (g *Game) saveHighScore() {
+    data, _ := json.Marshal(map[string]int{"high": g.highScore})
+    os.WriteFile("highscore.json", data, 0644)
+}
+
+func (g *Game) Update() error {
+    if g.gameOver {
+        if inpututil.IsKeyJustPressed(ebiten.KeyR) {
+            *g = *NewGame()
+        }
+        return nil
+    }
+    if inpututil.IsKeyJustPressed(ebiten.KeyP) {
+        g.paused = !g.paused
+    }
+    if g.paused {
+        return nil
+    }
+    // управление
+    if inpututil.IsKeyJustPressed(ebiten.KeyLeft) {
+        g.move(-1, 0)
+    }
+    if inpututil.IsKeyJustPressed(ebiten.KeyRight) {
+        g.move(1, 0)
+    }
+    if inpututil.IsKeyJustPressed(ebiten.KeyDown) {
+        g.move(0, 1)
+    }
+    if inpututil.IsKeyJustPressed(ebiten.KeyUp) {
+        g.rotate()
+    }
+    if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+        g.hardDrop()
+    }
+    // автоматическое падение
+    g.fallTimer++
+    if g.fallTimer >= g.fallSpeed {
+        g.move(0, 1)
+        g.fallTimer = 0
+    }
+    return nil
+}
+
+func (g *Game) Draw(screen *ebiten.Image) {
+    // поле
+    for y := 0; y < gridH; y++ {
+        for x := 0; x < gridW; x++ {
+            col := colors[g.grid[y][x]]
+            drawBlock(screen, x*blockSize, y*blockSize, col)
+        }
+    }
+    // текущая фигура
+    for i, row := range g.current.shape {
+        for j, cell := range row {
+            if cell == 1 {
+                col := colors[g.current.color]
+                drawBlock(screen, (g.current.x+j)*blockSize, (g.current.y+i)*blockSize, col)
+            }
+        }
+    }
+    // панель
+    drawText(screen, "SCORE", panelX, 50, color.White)
+    drawText(screen, formatInt(g.score), panelX, 80, color.White)
+    drawText(screen, "LINES", panelX, 120, color.White)
+    drawText(screen, formatInt(g.lines), panelX, 150, color.White)
+    drawText(screen, "LEVEL", panelX, 190, color.White)
+    drawText(screen, formatInt(g.level), panelX, 220, color.White)
+    drawText(screen, "HIGH", panelX, 260, color.White)
+    drawText(screen, formatInt(g.highScore), panelX, 290, color.White)
+    drawText(screen, "NEXT:", panelX, 340, color.White)
+    for i, row := range g.next.shape {
+        for j, cell := range row {
+            if cell == 1 {
+                col := colors[g.next.color]
+                drawBlock(screen, panelX+j*25, 370+i*25, col)
+            }
+        }
+    }
+    if g.gameOver {
+        drawText(screen, "GAME OVER", panelX, 450, color.RGBA{255,0,0,255})
+        drawText(screen, "Press R", panelX, 480, color.White)
+    }
+    if g.paused {
+        drawText(screen, "PAUSED", panelX, 450, color.RGBA{255,255,0,255})
+    }
+}
+
+func drawBlock(screen *ebiten.Image, x, y int, col color.Color) {
+    ebitenutil.DrawRect(screen, float64(x), float64(y), blockSize-1, blockSize-1, col)
+}
+
+func drawText(screen *ebiten.Image, text string, x, y int, col color.Color) {
+    ebitenutil.DebugPrintAt(screen, text, x, y)
+}
+
+func formatInt(n int) string {
+    return string(rune(n + '0')) // упрощённо
+}
+
+func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
+    return screenWidth, screenHeight
+}
+
+func main() {
+    rand.Seed(time.Now().UnixNano())
+    ebiten.SetWindowSize(screenWidth, screenHeight)
+    ebiten.SetWindowTitle("Tetris - Go")
+    if err := ebiten.RunGame(NewGame()); err != nil {
+        log.Fatal(err)
+    }
+}
